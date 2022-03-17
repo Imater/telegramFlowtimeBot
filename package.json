@@ -1,0 +1,27 @@
+{
+  "name": "telegramflowtime",
+  "version": "1.0.0",
+  "description": "FlowTime telegram bot timer. Work 80% and 20% rest reminder",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/Imater/telegramFlowtimeBot.git"
+  },
+  "keywords": [
+    "flowtime",
+    "telegram",
+    "bot"
+  ],
+  "author": "imater",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Imater/telegramFlowtimeBot/issues"
+  },
+  "homepage": "https://github.com/Imater/telegramFlowtimeBot#readme",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.56.0"
+  }
+}
