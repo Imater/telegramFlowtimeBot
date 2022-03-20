@@ -15,13 +15,11 @@ export default function createMachine(stateMachineDefinition) {
 
       const transitionAccepted = destinationTransition.action()
       if (!transitionAccepted) {
-        console.log('transition not accepted');
         return machine.value;
       }
       currentStateDefinition.actions.onExit()
       destinationStateDefinition.actions.onEnter()
       machine.value = destinationState
-      console.log('new machine value = ', {currentState, event, destinationState, value: machine.value});
 
       return machine.value
     },

@@ -5,21 +5,23 @@ import { LocalStorage } from 'node-localstorage';
 import createMachine from './state-machine';
 import momentDurationFormatSetup from 'moment-duration-format';
 import moment from 'moment';
+import { Box } from 'tcharts.js';
 
 momentDurationFormatSetup(moment);
 
 const localStorage = new LocalStorage('./scratch');
 
 
-const MS_IN_MINUTES = 60 * 1000;
-const REFRESH_MS = 2000;
+const MS_IN_SECONDS = 1000;
+const REFRESH_MS = 1000;
+const REFRESH_MS_IDLE = 1000;
 
 const token = process.env.FLOWTIME_BOT_TOKEN;
 
-const restProcent = 20;
+const restProcent = 60;
 
 if(!token) {
-  console.error('no token in env FLWTIME_BOT_TOKEN')
+  console.error('no token in env FLOWTIME_BOT_TOKEN')
   process.exit(0);
 }
 
@@ -31,7 +33,6 @@ const delay = (ms: number) => new Promise((resolve, reject) => {
     reject('aborted timer');
   })
 });
-
 
 
 const stringify = (obj: any): string => JSON.stringify(obj, null, 2);
@@ -61,12 +62,7 @@ const calculateRestTime = (timeFromStart: number): number => {
   return result;
 }
 
-const workStatus = (context: any) => {
-    const state = context.machine.value;
-    bot.sendMessage(context.chatId, `Status "${state}"`);
-}
-
-const dur = (minutes) => moment.duration(minutes, 'minutes').format('h [hrs], m [min]');
+const dur = (minutes) => moment.duration(minutes, 'seconds').format('h [hrs], m [min], s [sec]');
 
 const singletones = {};
 
@@ -76,10 +72,83 @@ const init = (chatId: string) => {
     }
     let restTimer = null;
     let workTimer = null;
+    let idleTimer = null;
     const store = Store(chatId);
-    console.log('createMachine');
+    const addDeposite = (keyName, value = 0) => {
+        const today = moment().format('YYYY-MM-DD');
+        const depositeStore = store.get('byDayStats') || {};
+        if (!depositeStore[today]) {
+            depositeStore[today] = {
+              [keyName]: 0,
+            };
+        }
+        if (!depositeStore[today][keyName]) {
+            depositeStore[today][keyName] = 0;
+        }
+        depositeStore[today][keyName] += parseInt(depositeStore[today][keyName], 10) + parseInt(value, 10);
+        store.set('byDayStats', depositeStore);
+    }
+    const getDeposite = (keyName: string) => {
+        const today = moment().format('YYYY-MM-DD');
+        const depositeStore = store.get('byDayStats') || {};
+        return depositeStore[today][keyName] || 0;
+    }
+    const workStatus = (context: any) => {
+        const box = new Box(31, 10); // width, height
+        box.setData([
+          { name: 'work', value: getDeposite('workTime') },
+          { name: 'rest', value: getDeposite('restTime') },
+          { name: 'idle', value: getDeposite('idleTime') },
+        ]);
+
+        bot.sendMessage(context.chatId, `<code>${box.string()}</code>`, {
+          parse_mode: 'HTML',
+          "reply_markup": {
+              "keyboard": [["start"], ["end"], ["status"]]
+          }
+        })
+    }
+
     const machine = createMachine({
-      initialState: 'rest',
+      initialState: 'idle',
+      idle: {
+        actions: {
+          onEnter() {
+            const idleStartTime = store.set('idleStartTime', moment());
+            const msPromise = bot.sendMessage(chatId, `Idle start ${idleStartTime?.format('HH:mm')}`);
+            msPromise.then((msg) => {
+              let oldText = '';
+              idleTimer = setInterval(() => {
+                const now = moment();
+                const rest = moment(now).diff(store.get('idleStartTime'), 'seconds');
+                const messageText = `idle for ${dur(rest)}`
+                if (messageText === oldText) {
+                  return;
+                }
+                oldText = messageText;
+                bot.editMessageText(messageText, {
+                  chat_id: chatId,
+                  message_id: msg.message_id
+                });
+              }, REFRESH_MS_IDLE);
+            });
+          },
+          onExit() {
+            const idleStartTime = store.get('idleStartTime') || moment();
+            addDeposite('idleTime', moment().diff(idleStartTime, 'seconds'));
+            addDeposite('idleCount', 1);
+            clearInterval(idleTimer);
+          },
+        },
+        transitions: {
+          start: {
+            target: 'work',
+            action() {
+              return true;
+            }
+          },
+        },
+      },
       work: {
         actions: {
           onEnter() {
@@ -89,7 +158,7 @@ const init = (chatId: string) => {
               let oldText = '';
               workTimer = setInterval(() => {
                 const now = moment();
-                const rest = moment(now).diff(store.get('startTime'), 'minutes');
+                const rest = moment(now).diff(store.get('startTime'), 'seconds');
                 const restDuration = calculateRestTime(rest);
                 const messageText = `Working for ${dur(rest)}. Earned ${dur(restDuration)}`
                 if (messageText === oldText) {
@@ -105,11 +174,20 @@ const init = (chatId: string) => {
           },
           onExit() {
             clearTimeout(workTimer);
+            const workStartTime = store.get('startTime') || moment();
+            addDeposite('workTime', moment().diff(workStartTime, 'seconds'))
+            addDeposite('workCount', 1);
           },
         },
         transitions: {
           end: {
             target: 'rest',
+            action() {
+              return true;
+            },
+          },
+          idle: {
+            target: 'idle',
             action() {
               return true;
             },
@@ -120,15 +198,16 @@ const init = (chatId: string) => {
         actions: {
           onEnter() {
             const now = moment();
-            const timeFromStart = moment(now).diff(store.get('startTime'), 'minutes');
+            store.set('restStartTime', now);
+            const timeFromStart = moment(now).diff(store.get('startTime'), 'seconds');
             const restDuration = calculateRestTime(timeFromStart);
-            const restEndTime = store.set('restEndTime', now.add(restDuration, 'minutes'));
+            const restEndTime = store.set('restEndTime', now.add(restDuration, 'seconds'));
             const msPromise = bot.sendMessage(chatId, `You can rest ${dur(restDuration)} till ${restEndTime?.format('HH:mm')}`);
             msPromise.then((msg) => {
               let oldText = '';
               restTimer = setInterval(() => {
                 const now = moment();
-                const rest = moment(store.get('restEndTime')).diff(now, 'minutes');
+                const rest = moment(store.get('restEndTime')).diff(now, 'seconds');
                 const messageText = `Rest time ${dur(rest)} left`;
                 if (messageText === oldText) {
                   return;
@@ -139,19 +218,24 @@ const init = (chatId: string) => {
                   message_id: msg.message_id
                 });
               }, REFRESH_MS);
-            })
-            delay(restDuration * MS_IN_MINUTES).then(() => {
+            });
+            delay(restDuration * MS_IN_SECONDS).then(() => {
               bot.sendMessage(chatId, `The rest is over. You can work now from ${restEndTime?.format('HH:mm')}`);
+              addDeposite('restCount', 1);
             }).catch(() => {
               bot.sendMessage(chatId, `The rest is over before finish time`);
             }).finally(() => {
               clearTimeout(restTimer);
+              const state = machine.value;
+              machine.transition(state, 'idle')
             });
           },
           onExit() {
             controller.abort();
             clearTimeout(restTimer);
-            console.log('rest: onExit')
+            const restStartTime = store.get('restStartTime') || moment();
+            addDeposite('restTime', moment().diff(restStartTime, 'seconds'))
+            addDeposite('restCount', 1);
           },
         },
         transitions: {
@@ -162,13 +246,20 @@ const init = (chatId: string) => {
               return true;
             },
           },
+          idle: {
+            target: 'idle',
+            action() {
+              return true;
+            },
+          },
         },
       },
     });
     singletones[chatId] = {
         machine,
         store,
-        chatId
+        chatId,
+        workStatus,
     };
     return singletones[chatId];
 }
@@ -178,17 +269,20 @@ bot.on('message', (msg?: any) => {
   const chatId = msg.chat.id;
   const context = init(chatId);
 
-
   if (message === 'start') {
       const state = context.machine.value;
       context.machine.transition(state, 'start')
   } else if (message === 'end') {
       const state = context.machine.value;
       context.machine.transition(state, 'end')
+  } else if (message === 'idle') {
+      const state = context.machine.value;
+      context.machine.transition(state, 'idle')
   } else if (message === 'status') {
-      workStatus(context);
+      context.workStatus(context);
   }
 
 });
 
 bot.on("polling_error", console.error);
+
