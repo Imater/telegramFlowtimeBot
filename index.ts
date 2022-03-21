@@ -13,12 +13,13 @@ const localStorage = new LocalStorage('./scratch');
 
 
 const MS_IN_SECONDS = 1000;
-const REFRESH_MS = 1000;
-const REFRESH_MS_IDLE = 1000;
+const REFRESH_MS_IDLE = 30000;
+const REFRESH_MS_WORK = 1000;
+const REFRESH_MS_REST = 1000;
 
 const token = process.env.FLOWTIME_BOT_TOKEN;
 
-const restProcent = 60;
+const restProcent = 25;
 
 if(!token) {
   console.error('no token in env FLOWTIME_BOT_TOKEN')
@@ -93,8 +94,17 @@ const init = (chatId: string) => {
         const depositeStore = store.get('byDayStats') || {};
         return depositeStore[today][keyName] || 0;
     }
+    const resetDeposite = () => {
+        const today = moment().format('YYYY-MM-DD');
+        const depositeStore = store.get('byDayStats') || {};
+        if (depositeStore[today]) {
+            depositeStore[today] = {
+            };
+        }
+        store.set('byDayStats', depositeStore);
+    }
     const workStatus = (context: any) => {
-        const box = new Box(31, 10); // width, height
+        const box = new Box(31, 8); // width, height
         box.setData([
           { name: 'work', value: getDeposite('workTime') },
           { name: 'rest', value: getDeposite('restTime') },
@@ -110,7 +120,7 @@ const init = (chatId: string) => {
     }
 
     const machine = createMachine({
-      initialState: 'idle',
+      initialState: 'rest',
       idle: {
         actions: {
           onEnter() {
@@ -169,7 +179,7 @@ const init = (chatId: string) => {
                   chat_id: chatId,
                   message_id: msg.message_id
                 });
-              }, REFRESH_MS);
+              }, REFRESH_MS_WORK);
             })
           },
           onExit() {
@@ -217,7 +227,7 @@ const init = (chatId: string) => {
                   chat_id: chatId,
                   message_id: msg.message_id
                 });
-              }, REFRESH_MS);
+              }, REFRESH_MS_REST);
             });
             delay(restDuration * MS_IN_SECONDS).then(() => {
               bot.sendMessage(chatId, `The rest is over. You can work now from ${restEndTime?.format('HH:mm')}`);
@@ -260,6 +270,7 @@ const init = (chatId: string) => {
         store,
         chatId,
         workStatus,
+        resetDeposite,
     };
     return singletones[chatId];
 }
@@ -278,6 +289,9 @@ bot.on('message', (msg?: any) => {
   } else if (message === 'idle') {
       const state = context.machine.value;
       context.machine.transition(state, 'idle')
+  } else if (message === 'reset') {
+    context.resetDeposite();
+    bot.sendMessage(context.chatId, 'daily stats empty now');
   } else if (message === 'status') {
       context.workStatus(context);
   }
