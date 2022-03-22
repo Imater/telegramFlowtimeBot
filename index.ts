@@ -11,11 +11,26 @@ momentDurationFormatSetup(moment);
 
 const localStorage = new LocalStorage('./scratch');
 
-
 const MS_IN_SECONDS = 1000;
-const REFRESH_MS_IDLE = 30000;
-const REFRESH_MS_WORK = 1000;
-const REFRESH_MS_REST = 1000;
+const REFRESH_MS = 1000;
+
+const repeatTelegramMessageByInterval = async ({ msPromise, chatId, bot }, cb: () => {}) => {
+  let restTimer = null;
+  const msg = await msPromise;
+  let oldText = '';
+  restTimer = setInterval(() => {
+    const messageText = cb();
+    if (messageText === oldText) {
+      return;
+    }
+    oldText = messageText;
+    bot.editMessageText(messageText, {
+      chat_id: chatId,
+      message_id: msg.message_id
+    });
+  }, REFRESH_MS);
+  return () => clearInterval(restTimer);
+};
 
 const token = process.env.FLOWTIME_BOT_TOKEN;
 
@@ -71,9 +86,9 @@ const init = (chatId: string) => {
     if (singletones[chatId]) {
         return singletones[chatId];
     }
-    let restTimer = null;
-    let workTimer = null;
-    let idleTimer = null;
+    let restTimerClear = () => {};
+    let workTimerClear = () => {};
+    let idleTimerClear = () => {};
     const store = Store(chatId);
     const addDeposite = (keyName, value = 0) => {
         const today = moment().format('YYYY-MM-DD');
@@ -126,28 +141,18 @@ const init = (chatId: string) => {
           onEnter() {
             const idleStartTime = store.set('idleStartTime', moment());
             const msPromise = bot.sendMessage(chatId, `Idle start ${idleStartTime?.format('HH:mm')}`);
-            msPromise.then((msg) => {
-              let oldText = '';
-              idleTimer = setInterval(() => {
-                const now = moment();
-                const rest = moment(now).diff(store.get('idleStartTime'), 'seconds');
-                const messageText = `idle for ${dur(rest)}`
-                if (messageText === oldText) {
-                  return;
-                }
-                oldText = messageText;
-                bot.editMessageText(messageText, {
-                  chat_id: chatId,
-                  message_id: msg.message_id
-                });
-              }, REFRESH_MS_IDLE);
+            repeatTelegramMessageByInterval({ msPromise, chatId, bot }, () => {
+              const rest = moment().diff(store.get('idleStartTime'), 'seconds');
+              return `idle for ${dur(rest)}`
+            }).then((clear) => {
+              idleTimerClear = clear;
             });
           },
           onExit() {
             const idleStartTime = store.get('idleStartTime') || moment();
             addDeposite('idleTime', moment().diff(idleStartTime, 'seconds'));
             addDeposite('idleCount', 1);
-            clearInterval(idleTimer);
+            idleTimerClear();
           },
         },
         transitions: {
@@ -164,26 +169,16 @@ const init = (chatId: string) => {
           onEnter() {
             const startTime = store.set('startTime', moment());
             const msPromise = bot.sendMessage(chatId, `Start work from ${startTime?.format('HH:mm')}`);
-            msPromise.then((msg) => {
-              let oldText = '';
-              workTimer = setInterval(() => {
-                const now = moment();
-                const rest = moment(now).diff(store.get('startTime'), 'seconds');
-                const restDuration = calculateRestTime(rest);
-                const messageText = `Working for ${dur(rest)}. Earned ${dur(restDuration)}`
-                if (messageText === oldText) {
-                  return;
-                }
-                oldText = messageText;
-                bot.editMessageText(messageText, {
-                  chat_id: chatId,
-                  message_id: msg.message_id
-                });
-              }, REFRESH_MS_WORK);
-            })
+            repeatTelegramMessageByInterval({ msPromise, chatId, bot }, () => {
+              const rest = moment().diff(store.get('startTime'), 'seconds');
+              const restDuration = calculateRestTime(rest);
+              return `Working for ${dur(rest)}. Earned ${dur(restDuration)}`
+            }).then((clear) => {
+              workTimerClear = clear;
+            });
           },
           onExit() {
-            clearTimeout(workTimer);
+            workTimerClear();
             const workStartTime = store.get('startTime') || moment();
             addDeposite('workTime', moment().diff(workStartTime, 'seconds'))
             addDeposite('workCount', 1);
@@ -213,21 +208,11 @@ const init = (chatId: string) => {
             const restDuration = calculateRestTime(timeFromStart);
             const restEndTime = store.set('restEndTime', now.add(restDuration, 'seconds'));
             const msPromise = bot.sendMessage(chatId, `You can rest ${dur(restDuration)} till ${restEndTime?.format('HH:mm')}`);
-            msPromise.then((msg) => {
-              let oldText = '';
-              restTimer = setInterval(() => {
-                const now = moment();
-                const rest = moment(store.get('restEndTime')).diff(now, 'seconds');
-                const messageText = `Rest time ${dur(rest)} left`;
-                if (messageText === oldText) {
-                  return;
-                }
-                oldText = messageText;
-                bot.editMessageText(messageText, {
-                  chat_id: chatId,
-                  message_id: msg.message_id
-                });
-              }, REFRESH_MS_REST);
+            repeatTelegramMessageByInterval({ msPromise, chatId, bot }, () => {
+              const rest = moment(store.get('restEndTime')).diff(moment(), 'seconds');
+              return `Rest time ${dur(rest)} left`;
+            }).then((clear) => {
+              restTimerClear = clear;
             });
             delay(restDuration * MS_IN_SECONDS).then(() => {
               bot.sendMessage(chatId, `The rest is over. You can work now from ${restEndTime?.format('HH:mm')}`);
@@ -235,14 +220,14 @@ const init = (chatId: string) => {
             }).catch(() => {
               bot.sendMessage(chatId, `The rest is over before finish time`);
             }).finally(() => {
-              clearTimeout(restTimer);
+              restTimerClear();
               const state = machine.value;
               machine.transition(state, 'idle')
             });
           },
           onExit() {
             controller.abort();
-            clearTimeout(restTimer);
+            clearTimeout(restTimerClear);
             const restStartTime = store.get('restStartTime') || moment();
             addDeposite('restTime', moment().diff(restStartTime, 'seconds'))
             addDeposite('restCount', 1);
